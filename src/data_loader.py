@@ -296,6 +296,35 @@ def load_generic_mat(file_path, preload=True):
         f"Loading generic .mat data from key: '{best_key}' with shape {data.shape}"
     )
 
+    labels = None
+    # Handle structured array (MATLAB struct)
+    if data.dtype.names:
+        logger.info(f"Found structured array with fields: {data.dtype.names}")
+        if "rawdata" in data.dtype.names:
+            try:
+                # Access the first element if it's a 1x1 struct
+                if data.size == 1:
+                    # data[0, 0] gives the void scalar, we access fields by name from the array or scalar
+                    # For a (1,1) struct array 'data':
+                    # data['rawdata'] is (1,1) object array containing the data
+                    raw_val = data["rawdata"][0, 0]
+
+                    if "label" in data.dtype.names:
+                        labels = data["label"][0, 0]
+
+                    data = raw_val
+                    logger.info(
+                        f"Extracted 'rawdata' from struct. New shape: {data.shape}"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to extract rawdata from struct: {e}")
+
+    # Create dummy info
+    sfreq = 250.0  # Default assumption
+
+    n_trials = 0
+    n_samples_per_trial = 0
+
     # Handle 3D data (Trials x Channels x Time) -> Concatenate to 2D
     if data.ndim == 3:
         # Assume shape is (n_trials, n_channels, n_samples)
@@ -303,11 +332,15 @@ def load_generic_mat(file_path, preload=True):
         s0, s1, s2 = data.shape
         if s1 < s2:
             # (Trials, Channels, Samples) -> (Channels, Trials*Samples)
+            n_trials = s0
+            n_samples_per_trial = s2
             data = np.concatenate([data[i] for i in range(s0)], axis=1)
         else:
             # Fallback: maybe (Trials, Samples, Channels)?
             # Try to rearrange to (Channels, Time)
             # This is a guess.
+            n_trials = s0
+            n_samples_per_trial = s1
             data = np.concatenate([data[i].T for i in range(s0)], axis=1)
 
     # Handle 2D data (Channels x Time) or (Time x Channels)
@@ -322,8 +355,6 @@ def load_generic_mat(file_path, preload=True):
 
     n_channels = data.shape[0]
 
-    # Create dummy info
-    sfreq = 250.0  # Default assumption
     ch_names = [f"Ch{i + 1}" for i in range(n_channels)]
     ch_types = ["eeg"] * n_channels
 
@@ -331,12 +362,23 @@ def load_generic_mat(file_path, preload=True):
 
     raw = mne.io.RawArray(data, info)
 
+    # Add annotations if trials were detected
+    if n_trials > 0 and n_samples_per_trial > 0:
+        duration = n_samples_per_trial / sfreq
+        onsets = np.arange(0, n_trials * duration, duration)
+        descriptions = [f"Trial_{i + 1}" for i in range(n_trials)]
+        annotations = mne.Annotations(
+            onset=onsets, duration=[duration] * n_trials, description=descriptions
+        )
+        raw.set_annotations(annotations)
+        logger.info(f"Added {n_trials} annotations based on 3D structure.")
+
     logger.warning(
         f"Loaded generic .mat file. Assumed sfreq={sfreq}Hz. "
         "Please update raw.info['sfreq'] and channel names manually if incorrect."
     )
 
-    return raw, None
+    return raw, labels
 
 
 def load_data(file_path, montage_name="standard_1020", preload=True):
@@ -421,3 +463,33 @@ def load_data(file_path, montage_name="standard_1020", preload=True):
     except Exception as e:
         logger.error(f"Failed to load {file_path}: {e}")
         raise
+
+
+def find_dataset_files(data_dir, pattern=None):
+    """
+    Recursively find supported EEG files in a directory.
+
+    Args:
+        data_dir (str or Path): Directory to search.
+        pattern (str, optional): Glob pattern to filter files.
+
+    Returns:
+        list: List of Path objects for supported files.
+    """
+    data_dir = Path(data_dir)
+    supported_extensions = {".edf", ".gdf", ".bdf", ".set", ".mat", ".dat"}
+
+    if not data_dir.exists():
+        raise FileNotFoundError(f"Directory not found: {data_dir}")
+
+    if pattern:
+        # If pattern is provided, use it
+        all_files = data_dir.rglob(pattern)
+    else:
+        # Otherwise, find all files
+        all_files = data_dir.rglob("*")
+
+    # Filter by extension
+    return [
+        f for f in all_files if f.is_file() and f.suffix.lower() in supported_extensions
+    ]

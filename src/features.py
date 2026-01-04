@@ -70,3 +70,27 @@ def compute_differential_entropy(psds, freqs, bands):
     de_features = np.log(band_powers + 1e-10)
 
     return de_features
+
+
+def normalize_features(features, method="zscore"):
+    """
+    对特征进行标准化。
+
+    参数:
+        features: (n_epochs, n_channels, n_bands)
+        method: 'zscore' or 'minmax'
+
+    返回:
+        normalized_features: 形状同 features
+    """
+    if method == "zscore":
+        # 沿 epoch 维度 (axis=0) 计算均值和标准差
+        mean = np.mean(features, axis=0, keepdims=True)
+        std = np.std(features, axis=0, keepdims=True)
+        return (features - mean) / (std + 1e-10)
+    elif method == "minmax":
+        min_val = np.min(features, axis=0, keepdims=True)
+        max_val = np.max(features, axis=0, keepdims=True)
+        return (features - min_val) / (max_val - min_val + 1e-10)
+    else:
+        return features

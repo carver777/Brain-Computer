@@ -51,13 +51,13 @@ def main():
             plot_labels = labels
             logger.info("Using event labels for visualization.")
 
-        # Determine dataset name from parent directory
-        # Check for new structure: results/<dataset>-preprocessed-results/npz-data/file.npz
+        # 从父目录确定数据集名称
+        # 检查新结构: results/<dataset>-preprocessed-results/npz-data/file.npz
         if npz_file.parent.name == "npz-data" and npz_file.parent.parent.name.endswith(
             "-preprocessed-results"
         ):
             viz_base = npz_file.parent.parent / "plots"
-        # Check for previous structure: results/<dataset>-npz-data/file.npz
+        # 检查旧结构: results/<dataset>-npz-data/file.npz
         elif npz_file.parent.name.endswith("-npz-data"):
             dataset_name = npz_file.parent.name.replace("-npz-data", "")
             viz_base = results_dir / f"{dataset_name}-plots"

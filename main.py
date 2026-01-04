@@ -6,7 +6,7 @@ import mne
 import numpy as np
 import yaml
 
-from src.data_loader import load_data
+from src.data_loader import find_dataset_files, load_data
 from src.features import compute_differential_entropy, compute_psd_features
 from src.preprocessing import extract_epochs, preprocess_raw
 from src.visualization import (
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 def load_config(config_path):
-    with open(config_path, "r") as f:
+    with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
@@ -58,6 +58,13 @@ def main():
         type=str,
         default=None,
         help="Filename pattern to filter datasets (e.g., 's01*', '*.mat')",
+    )
+    parser.add_argument(
+        "-d",
+        "--dataset",
+        type=str,
+        default=None,
+        help="Relative path to the dataset directory within 'data/' to process.",
     )
     args = parser.parse_args()
 
@@ -82,26 +89,94 @@ def main():
 
     logger.info("Starting EEG processing pipeline...")
 
-    # 列出数据目录中所有支持的文件
-    supported_extensions = [".edf", ".gdf", ".bdf", ".set", ".mat", ".dat"]
+    # Determine search directory
+    search_dir = data_dir
 
-    # 如果指定了 pattern，则使用 pattern 进行 glob 搜索
-    if args.pattern:
-        search_pattern = args.pattern
-        # 如果 pattern 不包含扩展名，可能需要更灵活的匹配，这里简单处理为直接匹配
-        # rglob 是递归的，如果用户只想匹配文件名，可以结合 fnmatch 或简单的字符串包含
-        # 这里我们假设用户提供的 pattern 是用于 rglob 的
-        all_files = data_dir.rglob(search_pattern)
-    else:
-        all_files = data_dir.rglob("*")
+    # Interactive mode if no dataset argument is provided
+    if not args.dataset:
+        print("\n--- Available Datasets ---")
+        datasets = [d for d in data_dir.iterdir() if d.is_dir()]
 
-    files_to_process = [
-        f for f in all_files if f.suffix.lower() in supported_extensions
-    ]
+        if not datasets:
+            print("No datasets found in 'data/' directory.")
+            return
+
+        for i, d in enumerate(datasets):
+            print(f"{i + 1}. {d.name}")
+
+        while True:
+            try:
+                choice = input(
+                    "\nSelect a dataset number to process (or 'q' to quit): "
+                )
+                if choice.lower() == "q":
+                    return
+                idx = int(choice) - 1
+                if 0 <= idx < len(datasets):
+                    selected_dataset = datasets[idx]
+                    break
+                else:
+                    print("Invalid selection. Please try again.")
+            except ValueError:
+                print("Invalid input. Please enter a number.")
+
+        search_dir = selected_dataset
+        print(f"\nSelected dataset: {selected_dataset.name}")
+
+        # Try to find a real file to show in the tip
+        sample_cmd = f'python tool/inspect_data.py "{search_dir}/<path_to_file>"'
+        note = (
+            "  (Replace <path_to_file> with an actual file inside the dataset folder)"
+        )
+
+        supported_exts = {".mat", ".edf", ".bdf", ".gdf", ".set", ".dat"}
+        # Search for the first matching file
+        found_files = [
+            f
+            for f in search_dir.rglob("*")
+            if f.is_file() and f.suffix.lower() in supported_exts
+        ]
+
+        if found_files:
+            try:
+                # Try to make path relative to CWD for cleaner output
+                rel_path = found_files[0].relative_to(Path.cwd())
+                sample_cmd = f'python tool/inspect_data.py "{rel_path}"'
+                note = ""
+            except ValueError:
+                sample_cmd = f'python tool/inspect_data.py "{found_files[0]}"'
+                note = ""
+
+        print(
+            "\n[TIP] Before processing, you can inspect the data structure using the tool:"
+        )
+        print(f"  {sample_cmd}")
+        if note:
+            print(note)
+
+        confirm = input(
+            "\nDo you want to proceed with processing this dataset? (y/n): "
+        )
+        if confirm.lower() != "y":
+            print("Processing aborted.")
+            return
+
+    elif args.dataset:
+        search_dir = data_dir / args.dataset
+        if not search_dir.exists():
+            logger.error(f"Dataset directory not found: {search_dir}")
+            return
+        logger.info(f"Searching for data in: {search_dir}")
+
+    try:
+        files_to_process = find_dataset_files(search_dir, args.pattern)
+    except Exception as e:
+        logger.error(f"Error finding files: {e}")
+        return
 
     if not files_to_process:
         logger.warning(
-            f"No supported files found in {data_dir}. Please add .edf, .gdf, .set, or .mat files."
+            f"No supported files found in {search_dir}. Please add .edf, .gdf, .set, or .mat files."
         )
         return
 
@@ -112,9 +187,19 @@ def main():
         try:
             logger.info(f"Processing file: {file_path.name}")
 
-            # Determine dataset name and create output directories
-            dataset_name = file_path.parent.name
-            dataset_results_dir = results_dir / f"{dataset_name}-preprocessed-results"
+            # Determine dataset name and create output directories preserving hierarchy
+            rel_path = file_path.relative_to(data_dir)
+            dataset_root_name = rel_path.parts[0]
+
+            # Subdirectory structure (if any) inside the dataset folder
+            if len(rel_path.parts) > 2:
+                sub_dirs = Path(*rel_path.parts[1:-1])
+            else:
+                sub_dirs = Path(".")
+
+            dataset_results_dir = (
+                results_dir / f"{dataset_root_name}-preprocessed-results" / sub_dirs
+            )
             fif_dir = dataset_results_dir / "fif-data"
             npz_dir = dataset_results_dir / "npz-data"
 
@@ -167,6 +252,7 @@ def main():
                     raw_clean,
                     duration=epoch_cfg["tmax"] - epoch_cfg["tmin"],
                     overlap=epoch_cfg["overlap"],
+                    preload=True,
                 )
 
             # 5. 特征提取
@@ -190,6 +276,11 @@ def main():
                 if len(epochs) < len(gt_labels) and len(gt_labels) == len(events):
                     logger.info("Aligning ground truth labels with selected epochs.")
                     gt_labels = gt_labels[epochs.selection]
+                # Handle case where epochs are sliding windows over trials (e.g. 40 trials -> 640 epochs)
+                elif len(epochs) > len(gt_labels) and len(epochs) % len(gt_labels) == 0:
+                    factor = len(epochs) // len(gt_labels)
+                    logger.info(f"Expanding labels by factor {factor} to match epochs.")
+                    gt_labels = np.repeat(gt_labels, factor, axis=0)
 
                 np.savez(
                     feature_filename,

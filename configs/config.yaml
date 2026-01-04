@@ -3,6 +3,21 @@ preprocessing:
   high_freq: 40.0
   notch_freq: 50.0
   resample_freq: 250.0
+  interpolation:
+    enable: true
+    method: "spline"  # "spline" (spherical spline) or "mean"
+    bad_channels: []  # 手动指定坏导，例如 ["FP1", "O1"]
+  ica:
+    enable: true
+    n_components: 20
+    method: "fastica"
+    random_state: 97
+    exclude_eog: true  # 尝试自动检测并去除眼电伪影
+  rereference:
+    enable: true
+    type: "average"  # "average" (CAR) or list of channel names
+
+subjects: [] # List of subjects to process, e.g. ["s01", "sub-02"]. If empty, process all.
 
 epoching:
   tmin: 0.0
@@ -17,6 +32,9 @@ features:
   bands:
     Delta: [1, 4]
     Theta: [4, 8]
+  normalization:
+    enable: true
+    method: "zscore"  # "zscore" or "minmax"
     Alpha: [8, 13]
     Beta: [13, 30]
     Gamma: [30, 50]
