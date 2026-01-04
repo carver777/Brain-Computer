@@ -12,5 +12,4 @@ wheels/
 # Project
 data/
 results/
-*.log
-
+app.py
